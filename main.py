@@ -9,6 +9,7 @@ import shutil
 import tempfile
 from dotenv import load_dotenv
 import os
+import sqlite3
 
 # Load variables from .env file
 load_dotenv()
@@ -115,7 +116,7 @@ async def message_handler(event):
         user_id = event.sender_id
         if user_id not in user_preferences:
             user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
-            
+
         tags, exclude_tags, page_id, limit = process_user_message(event.message.text)
 
         if user_preferences[user_id]['content_mode'] == 0:
@@ -133,63 +134,84 @@ async def message_handler(event):
 
         elapsed_time = time.time() - start_time
         last_page_id = page_id + limit
-        await event.reply(
+        await event.respond(
             f"Done in {elapsed_time:.2f} seconds, downloaded {files_processed} file(s).\n"
             f"Last processed page ID: {last_page_id}\n"
-            f"Last processed query: {event.message.text}", buttons=[Button.inline("Search again", b"search")]
+            f"Last processed query: `{event.message.text}`", buttons=[Button.inline("Search again", b"search")]
         )
     except Exception as e:
         await event.respond(f"An error occurred: {str(e)}")
 
+
 @client.on(events.CallbackQuery)
 async def callback_query(event):
     if event.data == b'search':
-        # Retrieve the original message that was replied to
-        original_message = await event.get_message()
-        if original_message and original_message.reply_to:
-            # Get the replied-to message's content
-            reply_message = await original_message.get_reply_message()
+        max_retries = 3
+        retry_delay = 1  # seconds
 
-            if reply_message:
-                start_time = time.time()
-                try:
-                    user_id = event.sender_id
-                    if user_id not in user_preferences:
-                        user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
-                        
-                    # Extract the last processed query and page ID from the bot's message
-                    message_lines = original_message.text.split('\n')
-                    last_page_id = int(message_lines[-2].replace('Last processed page ID: ', ''))
-                    last_query = message_lines[-1].replace('Last processed query: ', '')
+        for attempt in range(max_retries):
+            try:
+                # Retrieve the original message that was replied to
+                original_message = await event.get_message()
+                if original_message and original_message.reply_to:
+                    # Get the replied-to message's content
+                    reply_message = await original_message.get_reply_message()
 
-                    # Process the message with the extracted information
-                    tags, exclude_tags, _, limit = process_user_message(last_query)
+                    if reply_message:
+                        start_time = time.time()
+                        try:
+                            user_id = event.sender_id
+                            if user_id not in user_preferences:
+                                user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
 
-                    # Apply content and NSFW mode logic
-                    if user_preferences[user_id]['content_mode'] == 0:
-                        exclude_tags.append("video")
-                    elif user_preferences[user_id]['content_mode'] == 1:
-                        tags.append("video")
+                            # Extract the last processed query and page ID from the bot's message
+                            message_lines = original_message.text.split('\n')
+                            last_page_id = int(message_lines[-2].replace('Last processed page ID: ', ''))
+                            last_query = message_lines[-1].replace('Last processed query: ', '')
 
-                    if not user_preferences[user_id]['nsfw_mode']:
-                        tags.append("rating:safe")
+                            # Process the message with the extracted information
+                            tags, exclude_tags, _, limit = process_user_message(last_query)
 
-                    # Perform the searching process and send files
-                    search = await searching_process(tags, exclude_tags, last_page_id, limit)
-                    files_processed = await sending_file(event, search)
+                            # Apply content and NSFW mode logic
+                            if user_preferences[user_id]['content_mode'] == 0:
+                                exclude_tags.append("video")
+                            elif user_preferences[user_id]['content_mode'] == 1:
+                                tags.append("video")
 
-                    elapsed_time = time.time() - start_time
-                    new_last_page_id = last_page_id + limit
+                            if not user_preferences[user_id]['nsfw_mode']:
+                                tags.append("rating:safe")
 
-                    # Send the response with updated information
-                    await event.reply(
-                        f"Done in {elapsed_time:.2f} seconds. Downloaded {files_processed} file(s).\n"
-                        f"Last processed page ID: {new_last_page_id}\n"
-                        f"Last processed query: {last_query}",
-                        buttons=[Button.inline("Search again", b"search")]
-                    )
-                except Exception as e:
-                    await event.respond(f"An error occurred: {str(e)}")
+                            # Perform the searching process and send files
+                            search = await searching_process(tags, exclude_tags, last_page_id, limit)
+                            files_processed = await sending_file(event, search)
+
+                            elapsed_time = time.time() - start_time
+                            new_last_page_id = last_page_id + limit
+
+                            # Send the response with updated information
+                            await event.respond(
+                                f"Done in {elapsed_time:.2f} seconds. Downloaded {files_processed} file(s).\n"
+                                f"Last processed page ID: {new_last_page_id}\n"
+                                f"Last processed query: `{last_query}`",
+                                buttons=[Button.inline("Search again", b"search")]
+                            )
+                            break  # Success, exit retry loop
+                        except Exception as e:
+                            await event.respond(f"An error occurred during processing: {str(e)}")
+                            break  # Processing error, exit retry loop
+                else:
+                    await event.respond("Could not find the original message or it has no reply.")
+                    break  # Message not found, exit retry loop
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    continue
+                else:
+                    await event.respond("Sorry, the bot is currently busy. Please try again in a few moments.")
+                    break
+            except Exception as e:
+                await event.respond(f"An unexpected error occurred: {str(e)}")
+                break
 
 
 async def searching_process(tags: List[str], exclude_tags: List[str], page_id: int, limit: int):
@@ -439,7 +461,6 @@ async def sending_file(event, search_results):
     print("All files processed successfully")
     return len(search_results)  # Return the number of files processed
 
-
 def process_user_message(message: str) -> Tuple[List[str], List[str], int, int]:
     """Process user message to extract tags and parameters."""
     # Updated pattern for tags to include underscores as valid characters
@@ -464,14 +485,19 @@ def process_user_message(message: str) -> Tuple[List[str], List[str], int, int]:
     # Filter tags to exclude 'pid' or 'limit' (case-insensitive match) and clean outputs
     tags = [tag.strip() for tag in tags_match if tag.strip().lower() not in {'pid', 'limit'}]
 
-    # Separate include and exclude tags
+    # Helper function to process and normalize tags
+    def normalize_tag(tag: str) -> str:
+        # Replace spaces with underscores, lowercase the tag, and normalize redundant underscores
+        tag = tag.replace(" ", "_").lower()
+        tag = re.sub(r'_+', '_', tag)  # Replace any multiple underscores with a single underscore
+        return tag
+
+    # Separate include and exclude tags and normalize
     include_tags = [
-        tag.replace(" ", "_").lower()
-        for tag in tags if not tag.startswith('-')
-    ]  # Replace spaces with underscores, preserve existing underscores, dots, and parentheses
+        normalize_tag(tag) for tag in tags if not tag.startswith('-')
+    ]
     exclude_tags = [
-        tag.lstrip('-').replace(" ", "_").lower()
-        for tag in tags if tag.startswith('-')
+        normalize_tag(tag.lstrip('-')) for tag in tags if tag.startswith('-')
     ]
 
     # Limit the number of tags to 3 each
