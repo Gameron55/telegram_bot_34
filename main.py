@@ -22,9 +22,8 @@ BOT_TOKEN = os.getenv('BOT_TOKEN')
 client = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 
 # Global settings
-nsfw_mode = True
+user_preferences = {}  # Dictionary to store user preferences
 NSFW_MODE = ["off", "on"]
-content_mode = 0
 CONTENT_MODE = ["image", "video", "all"]
 MAX_GROUP_SIZE = 10 * 1024 * 1024  # 10MB in bytes
 MAX_SINGLE_FILE = 50 * 1024 * 1024  # 50MB in bytes
@@ -88,17 +87,21 @@ async def start_handler(event):
 @client.on(events.NewMessage(pattern='/change_nsfw_mode'))
 async def change_nsfw_mode_handler(event):
     """Handle the /change_nsfw_mode command"""
-    global nsfw_mode
-    nsfw_mode = not nsfw_mode
-    await event.respond(f"NSFW mode changed to {NSFW_MODE[nsfw_mode]}")
+    user_id = event.sender_id
+    if user_id not in user_preferences:
+        user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
+    user_preferences[user_id]['nsfw_mode'] = not user_preferences[user_id]['nsfw_mode']
+    await event.respond(f"NSFW mode changed to {NSFW_MODE[user_preferences[user_id]['nsfw_mode']]}")
 
 
 @client.on(events.NewMessage(pattern='/change_content_mode'))
 async def change_content_mode_handler(event):
     """Handle the /change_content_mode command"""
-    global content_mode
-    content_mode = (content_mode + 1) % 3
-    await event.respond(f"Content mode changed to {CONTENT_MODE[content_mode]}")
+    user_id = event.sender_id
+    if user_id not in user_preferences:
+        user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
+    user_preferences[user_id]['content_mode'] = (user_preferences[user_id]['content_mode'] + 1) % 3
+    await event.respond(f"Content mode changed to {CONTENT_MODE[user_preferences[user_id]['content_mode']]}")
 
 
 @client.on(events.NewMessage)
@@ -109,16 +112,20 @@ async def message_handler(event):
 
     start_time = time.time()
     try:
+        user_id = event.sender_id
+        if user_id not in user_preferences:
+            user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
+            
         tags, exclude_tags, page_id, limit = process_user_message(event.message.text)
 
-        if content_mode == 0:
+        if user_preferences[user_id]['content_mode'] == 0:
             exclude_tags.append("video")
-        elif content_mode == 1:
+        elif user_preferences[user_id]['content_mode'] == 1:
             tags.append("video")
         else:
             pass
 
-        if not nsfw_mode:
+        if not user_preferences[user_id]['nsfw_mode']:
             tags.append("rating:safe")
 
         search = await searching_process(tags, exclude_tags, page_id, limit)
@@ -146,6 +153,10 @@ async def callback_query(event):
             if reply_message:
                 start_time = time.time()
                 try:
+                    user_id = event.sender_id
+                    if user_id not in user_preferences:
+                        user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
+                        
                     # Extract the last processed query and page ID from the bot's message
                     message_lines = original_message.text.split('\n')
                     last_page_id = int(message_lines[-2].replace('Last processed page ID: ', ''))
@@ -155,12 +166,12 @@ async def callback_query(event):
                     tags, exclude_tags, _, limit = process_user_message(last_query)
 
                     # Apply content and NSFW mode logic
-                    if content_mode == 0:
+                    if user_preferences[user_id]['content_mode'] == 0:
                         exclude_tags.append("video")
-                    elif content_mode == 1:
+                    elif user_preferences[user_id]['content_mode'] == 1:
                         tags.append("video")
 
-                    if not nsfw_mode:
+                    if not user_preferences[user_id]['nsfw_mode']:
                         tags.append("rating:safe")
 
                     # Perform the searching process and send files
