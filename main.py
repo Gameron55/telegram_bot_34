@@ -151,57 +151,68 @@ async def callback_query(event):
 
         for attempt in range(max_retries):
             try:
-                # Retrieve the original message that was replied to
-                original_message = await event.get_message()
-                if original_message and original_message.reply_to:
-                    # Get the replied-to message's content
-                    reply_message = await original_message.get_reply_message()
+                # First, get the message that contains the button
+                button_message = await event.get_message()
 
-                    if reply_message:
-                        start_time = time.time()
-                        try:
-                            user_id = event.sender_id
-                            if user_id not in user_preferences:
-                                user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
+                if not button_message:
+                    await event.respond("Error: Could not retrieve the button message.")
+                    break
 
-                            # Extract the last processed query and page ID from the bot's message
-                            message_lines = original_message.text.split('\n')
-                            last_page_id = int(message_lines[-2].replace('Last processed page ID: ', ''))
-                            last_query = message_lines[-1].replace('Last processed query: ', '')
+                # Extract information directly from the button message instead of relying on reply relationship
+                message_lines = button_message.text.split('\n')
 
-                            # Process the message with the extracted information
-                            tags, exclude_tags, _, limit = process_user_message(last_query)
+                # Check if the message follows the expected format
+                if len(message_lines) < 2 or not message_lines[-2].startswith("Last processed page ID:") or not \
+                message_lines[-1].startswith("Last processed query:"):
+                    await event.respond("Error: Message format is not as expected. Please start a new search.")
+                    break
 
-                            # Apply content and NSFW mode logic
-                            if user_preferences[user_id]['content_mode'] == 0:
-                                exclude_tags.append("video")
-                            elif user_preferences[user_id]['content_mode'] == 1:
-                                tags.append("video")
+                # Extract page ID and query directly from the button message
+                try:
+                    last_page_id = int(message_lines[-2].replace('Last processed page ID: ', '').strip())
+                    last_query = message_lines[-1].replace('Last processed query: ', '').strip()
+                except (ValueError, IndexError) as e:
+                    await event.respond(f"Error parsing message data: {str(e)}")
+                    break
 
-                            if not user_preferences[user_id]['nsfw_mode']:
-                                tags.append("rating:safe")
+                # Now process with the extracted information
+                start_time = time.time()
+                try:
+                    user_id = event.sender_id
+                    if user_id not in user_preferences:
+                        user_preferences[user_id] = {'nsfw_mode': True, 'content_mode': 0}
 
-                            # Perform the searching process and send files
-                            search = await searching_process(tags, exclude_tags, last_page_id, limit)
-                            files_processed = await sending_file(event, search)
+                    # Process the message with the extracted information
+                    tags, exclude_tags, _, limit = process_user_message(last_query)
 
-                            elapsed_time = time.time() - start_time
-                            new_last_page_id = last_page_id + limit
+                    # Apply content and NSFW mode logic
+                    if user_preferences[user_id]['content_mode'] == 0:
+                        exclude_tags.append("video")
+                    elif user_preferences[user_id]['content_mode'] == 1:
+                        tags.append("video")
 
-                            # Send the response with updated information
-                            await event.respond(
-                                f"Done in {elapsed_time:.2f} seconds. Downloaded {files_processed} file(s).\n"
-                                f"Last processed page ID: {new_last_page_id}\n"
-                                f"Last processed query: `{last_query}`",
-                                buttons=[Button.inline("Search again", b"search")]
-                            )
-                            break  # Success, exit retry loop
-                        except Exception as e:
-                            await event.respond(f"An error occurred during processing: {str(e)}")
-                            break  # Processing error, exit retry loop
-                else:
-                    await event.respond("Could not find the original message or it has no reply.")
-                    break  # Message not found, exit retry loop
+                    if not user_preferences[user_id]['nsfw_mode']:
+                        tags.append("rating:safe")
+
+                    # Perform the searching process and send files
+                    search = await searching_process(tags, exclude_tags, last_page_id, limit)
+                    files_processed = await sending_file(event, search)
+
+                    elapsed_time = time.time() - start_time
+                    new_last_page_id = last_page_id + limit
+
+                    # Send the response with updated information
+                    await event.respond(
+                        f"Done in {elapsed_time:.2f} seconds. Downloaded {files_processed} file(s).\n"
+                        f"Last processed page ID: {new_last_page_id}\n"
+                        f"Last processed query: `{last_query}`",
+                        buttons=[Button.inline("Search again", b"search")]
+                    )
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    await event.respond(f"An error occurred during processing: {str(e)}")
+                    break  # Processing error, exit retry loop
+
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
@@ -212,6 +223,7 @@ async def callback_query(event):
             except Exception as e:
                 await event.respond(f"An unexpected error occurred: {str(e)}")
                 break
+
 
 
 async def searching_process(tags: List[str], exclude_tags: List[str], page_id: int, limit: int):
@@ -463,6 +475,9 @@ async def sending_file(event, search_results):
 
 def process_user_message(message: str) -> Tuple[List[str], List[str], int, int]:
     """Process user message to extract tags and parameters."""
+    # Preprocess the message to ignore backticks (`), effectively removing them
+    message = message.replace('`', '')
+
     # Updated pattern for tags to include underscores as valid characters
     tag_pattern = r'(-?[a-zA-Z0-9._\s()]+(?:\([\w\s.]+\))?)'  # Include _ in tags
     pid_pattern = r'\bpid\s*(\d+)'  # Match 'pid' parameter
@@ -505,6 +520,7 @@ def process_user_message(message: str) -> Tuple[List[str], List[str], int, int]:
     exclude_tags = exclude_tags[:3]
 
     return include_tags, exclude_tags, pid, limit
+
 
 
 
