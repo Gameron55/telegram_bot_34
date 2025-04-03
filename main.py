@@ -158,7 +158,7 @@ async def callback_query(event):
                     await event.respond("Error: Could not retrieve the button message.")
                     break
 
-                # Extract information directly from the button message instead of relying on reply relationship
+                # Extract information directly from the button message
                 message_lines = button_message.text.split('\n')
 
                 # Check if the message follows the expected format
@@ -170,7 +170,11 @@ async def callback_query(event):
                 # Extract page ID and query directly from the button message
                 try:
                     last_page_id = int(message_lines[-2].replace('Last processed page ID: ', '').strip())
+
+                    # Extract the query and remove any backticks that may be present
                     last_query = message_lines[-1].replace('Last processed query: ', '').strip()
+                    last_query = last_query.replace('`', '')  # Remove any backticks from the query
+
                 except (ValueError, IndexError) as e:
                     await event.respond(f"Error parsing message data: {str(e)}")
                     break
@@ -223,6 +227,7 @@ async def callback_query(event):
             except Exception as e:
                 await event.respond(f"An unexpected error occurred: {str(e)}")
                 break
+
 
 
 
